@@ -1,0 +1,60 @@
+## Vlnplot
+modify_vlnplot <- function(obj, feature, pt.size = 0, plot.margin = unit(c(-0.75, 0, -0.75, 0), "cm"),...) {
+  p <- VlnPlot(obj, features = feature, pt.size = pt.size, ... ) +
+    xlab("") + ylab(feature) + ggtitle("") +
+    theme(legend.position = "none",
+          axis.text.x = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.ticks.y = element_line(),
+          axis.title.y = element_text(size = rel(1), angle = 0, vjust = 0.5),
+          plot.margin = plot.margin )
+  return(p)
+}
+
+## main function
+StackedVlnPlot <- function(obj, features, pt.size = 0, plot.margin = unit(c(-0.75, 0, -0.75, 0), "cm"), ...) {
+  plot_list <- purrr::map(features, function(x) modify_vlnplot(obj = obj,feature = x, ...))
+  plot_list[[length(plot_list)]]<- plot_list[[length(plot_list)]] +
+    theme(axis.text.x=element_text(), axis.ticks.x = element_line())
+  p <- patchwork::wrap_plots(plotlist = plot_list, ncol = 1)
+  return(p)
+}
+
+StackedVlnPlot(endo.integrated, c('Gpihbp1','Mki67','Car4','Cxcl12','Vwf','Prox1'), 
+               pt.size=0)
+
+## heatmap
+DefaultAssay(endo.integrated)<-'RNA'
+endo.integrated<-NormalizeData(endo.integrated)
+endo.integrated<-ScaleData(endo.integrated,features = rownames(endo.integrated))
+Idents(endo.integrated)<-'orig.ident'
+ctrl<-subset(endo.integrated,
+             idents ='ESC-GFP-WT')
+mut<-subset(endo.integrated,
+            idents = 'ESC-tdT-S52F')
+
+Idents(endo.integrated)<-'cell.type'
+endo.deg<-FindAllMarkers(endo.integrated, only.pos = T, logfc.threshold = 0.25)
+endo.deg<-endo.deg[endo.deg$p_val_adj<0.05,]
+top50.endo.deg<-endo.deg%>%
+  mutate(avg_fc=(avg_log2FC))%>%
+  group_by(cluster)%>%
+  top_n(n=50,
+        wt=avg_fc)
+
+DoHeatmap(ctrl,
+          features = as.character(unique(top50.endo.deg$gene)),
+          assay = 'RNA')+
+  scale_fill_gradientn(colors = c('purple','black','yellow'))+ 
+  theme(axis.text.y = element_text(size = 0),
+        axis.text.x = element_text(size = 0),
+        legend.text = element_text(size = 10))
+
+DoHeatmap(mut,
+          features = as.character(unique(top50.endo.deg$gene)),
+          assay = 'RNA')+
+  scale_fill_gradientn(colors = c('purple','black','orange'))+
+  theme(axis.text.y = element_text(size = 0),
+        axis.text.x = element_text(size = 0),
+        legend.text = element_text(size = 10))
