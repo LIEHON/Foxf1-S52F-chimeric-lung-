@@ -1,1 +1,1 @@
-R Notebooks for Bingqiang Wen et al., 2020 Raw UMI counts and associated metadata is available at the GEO accession GSE300670. All the codes listed just as I used it in my local environment. Macbook pro R version 3.5.3. Platform: x86_64-apple-darwin15.6.0 (64-bit) Running under: macOS 10.15.7
+R Notebooks for Bingqiang Wen et al., 2025.  Raw UMI counts and associated metadata is available at the GEO accession GSE300670. All the codes listed just as I used it in my local environment. Macbook pro R version 4.4.0. Platform: Apple M2 Max. Running under: macOS 13.7.4
