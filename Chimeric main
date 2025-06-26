@@ -1,0 +1,207 @@
+library(ggplot2)
+library(stringr)
+library(Seurat)
+library(tidyverse)
+library(Matrix)
+library(scales)
+library(cowplot)
+library(RCurl)
+library(stringr)
+library(dplyr)
+library(SeuratObject)
+library(viridis)
+library(pheatmap)
+library(RColorBrewer)
+library(rio)
+
+
+ctrl.data <- Read10X(data.dir = "../data/ctrl/filtered_gene_bc_matrices/")
+mt.data <- Read10X(data.dir = "../data/mt/filtered_gene_bc_matrices/")
+ctrl.all <- CreateSeuratObject(counts = ctrl.data, project = "WT-GFP")
+mt.all <- CreateSeuratObject(counts = mt.data, project = "Td-S52F")
+ctrl.all[["percent.mt"]] <- PercentageFeatureSet(ctrl.all, pattern = "^mt-")
+mt.all[["percent.mt"]] <- PercentageFeatureSet(mt.all, pattern = "^mt-")
+merged_seurat <- merge(ctrl.all,y=mt.all,
+                     add.cell.ids=c('WT-GFP','Td-S52F'))
+metadata<- merged_seurat@meta.data
+metadata$cells <- rownames(metadata)
+metadata$sample <-metadata$orig.ident
+metadata<-metadata %>%
+  dplyr::rename(seq_folder = orig.ident,
+                nUMI = nCount_RNA,
+                nGene =nFeature_RNA)
+merged_seurat@meta.data <-metadata
+metadata%>%
+  ggplot(aes(x=sample,fill=sample))+
+  geom_bar()+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45,vjust = 1,hjust = 1))+
+  theme(plot.title = element_text(hjust = 0.5,face = "bold"))+
+  ggtitle("NCells")
+metadata%>%
+  ggplot(aes(color=sample,x=nUMI,fill=sample))+
+  geom_density(alpha=0.5)+
+  scale_x_log10()+
+  theme_classic()+
+  ylab("cell density")+
+  geom_vline(xintercept = 1000)
+metadata%>%
+  ggplot(aes(color=sample,x=nGene,fill=sample))+
+  geom_density(alpha=0.2)+
+  theme_classic()+
+  scale_x_log10()+
+  geom_vline(xintercept = 600)
+metadata%>%
+  ggplot(aes(x=sample,y=log10(nGene),fill=sample))+
+  geom_boxplot()+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45,vjust = 1,hjust = 1))+
+  theme(plot.title = element_text(hjust = 0.5,face = "bold"))+
+  ggtitle("NCells vs NGenes")
+metadata%>%
+  ggplot(aes(x=nUMI,y=nGene,color=mitoRatio))+
+  geom_point()+
+  scale_colour_gradient(low = "lightgrey",high = "red")+
+  stat_smooth(method = lm)+
+  scale_x_log10()+
+  scale_y_log10()+
+  theme_classic()+
+  geom_vline(xintercept = 1000)+
+  geom_hline(yintercept = 600)+
+  facet_wrap(~sample)
+metadata%>%
+  ggplot(aes(color=sample,x=mitoRatio,fill=sample))+
+  geom_density(alpha=0.5)+
+  scale_x_log10()+
+  theme_classic()+
+  geom_vline(xintercept = 0.05)
+metadata%>%
+  ggplot(aes(x=log10GenesPerUMI,color=sample,fill=sample))+
+  geom_density(alpha=0.5)+
+  theme_classic()+
+  geom_vline(xintercept = 0.8)
+  
+filtered_seurat <-subset(x=merged_seurat,
+                         subset=(nUMI >=1000)&
+                           (nGene >= 600)&
+                           (log10GenesPerUMI>0.8)&
+                           (mitoRatio<0.2))
+
+counts<-GetAssayData(object = merged_seurat,slot = "counts")
+nonzero <-counts >0
+keep_genes <- Matrix::rowSums(nonzero)>=10
+merged_counts <-counts[keep_genes,]
+merged_seurat <-CreateSeuratObject(merged_counts,meta.data = merged_seurat@meta.data)
+split_seurat <- SplitObject(merged_seurat,split.by = 'orig.ident')
+for(i in 1:length(split_seurat)){
+  split_seurat[[i]]<-SCTransform(split_seurat[[i]],
+                                 vars.to.regress = c("mitoRatio"))
+}
+integ_features <- SelectIntegrationFeatures(object.list = split_seurat,
+                                            nfeatures = 3000)
+split_seurat<-PrepSCTIntegration(object.list = split_seurat,
+                                 anchor.features = integ_features)
+integ_anchors <-FindIntegrationAnchors(object.list = split_seurat,
+                                       normalization.method = "SCT",
+                                       anchor.features = integ_features)
+seurat_integrated <- IntegrateData(anchorset=integ_anchors,
+                                   normalization.method="SCT")
+seurat_integrated <- RunPCA(object = seurat_integrated)
+
+PCAPlot(seurat_integrated,
+        split.by="sample")
+seurat_integrated <- RunUMAP(seurat_integrated,
+                             dims = 1:30,reduction = "pca")
+DimPlot(seurat_integrated,group.by = 'orig.ident',reduction = 'umap')
+
+seurat_integrated<-FindNeighbors(object = seurat_integrated,dims = 1:30)
+
+seurat_integrated <- FindClusters(object = seurat_integrated,
+                                  resolution = c(0.4,0.8,1.2,1.4,1.8))
+Idents(object = seurat_integrated) <- "integrated_snn_res.0.4"
+DimPlot(seurat_integrated,reduction = 'umap',label = T,split.by = 'sample')
+DefaultAssay(seurat_integrated)<-'RNA'
+Marker<-FindAllMarkers(seurat_integrated,
+                       logfc.threshold = 0.25,
+                       only.pos = T)
+Marker <- Marker[Marker$p_val_adj<0.05,] 
+
+
+ESC.integrated <- RenameIdents(seurat_integrated, 'Endothelium'='Endo',
+                             'Alveolar macrophages'='AM',
+                             'Interstitial macrophages'='IM',
+                             'Monocytes'='Mono',
+                             'Neutrophils'='Neu',
+                             'DC1'='DC',
+                             'DC2'='DC',
+                             'Mast cell'='Mast',
+                             'Mast Ba2'='Baso',
+                             'Neutrophils'='Neu',
+                             'Matrixfib'='AF',
+                             'ASMC'='ASMC',
+                             'PMP'='PMP',
+                             'Mesothelial'='Meso',
+                             'Pericyte'='Peri',
+                             'Myofib'='SCMF',
+                             'Neuroendocrine'='PNEC',
+                             'AT1'='AT1',
+                             'AT1/2'='AT1/2',
+                             'AT2'='AT2',
+                             'Club'='Club',
+                             'Ciliated'='Ciliated')
+ESC.integrated$cell.type<-ESC.integrated@active.ident
+DimPlot(ESC.integrated,repel = T,
+        label=T,label.size = 8)+
+  guides(color=guide_legend(override.aes = list(size=4),ncol=2))+
+  theme(legend.text = element_text(size = 21),
+        legend.key.height = unit(.5,'inches'))
+
+DimPlot(ESC.integrated,repel = T,split.by = 'orig.ident',
+        label=F,label.size = 8)+
+  guides(color=guide_legend(override.aes = list(size=4),ncol=2))+
+  theme(legend.text = element_text(size = 21),
+        legend.key.height = unit(.5,'inches'))
+        
+marker <- c('Pecam1','Cldn5','Plet1','Lpl','Pf4','C1qa',
+            'Ifi27l2a','Cybb','S100a8','S100a9',
+            'Flt3','Ccr7','Cma1','Cpa3','Cyp11a1','Alox15',
+            'Tcf21','Wnt2','Actg2','Tagln',
+            'Wt1','Frem2',
+            'Pdgfrb','Trpc6','Enpp2','Tgfbi','Ascl1','Scg5',
+            'Ager','Hopx','Sftpb','Lamp3','Cyp2f2',"Scgb1a1",'Foxj1','Rsph1'
+)
+
+DotPlot(ESC.integrated, features = marker)+coord_flip()+
+  theme_bw()+
+  theme(panel.grid = element_blank(), axis.text = element_text(size = 15,colour = 'Black'),
+        axis.text.x=element_text(angle=30,hjust = 0.85,vjust=1,))+
+  labs(x=NULL,y=NULL)+guides(size=guide_legend(order=3))+
+  scale_color_gradientn(values = seq(0,1,0.2),colours = c('#330066','#336699','#66CC66','#FFCC33'))
+
+cell.prop <- prop.table(table(Idents(ESC.integrated),ESC.integrated$orig.ident),2)
+cell.prop <- 100*cell.prop
+cell.prop <- as.data.frame(cell.prop)
+names(cell.prop)[1:3] <- c('Cluster','group','value')
+ggplot(cell.prop, aes(fill=Cluster, y=value, x=group)) + geom_bar(position="stack", stat="identity") + theme_bw() + scale_y_continuous(expand = c(0,0),limits = c (0,100)) + theme(legend.position = "right",legend.title=element_blank(),legend.text=element_text(size=15),axis.title.x =element_text(size=0),axis.title.y=element_text(size=0),axis.text.x =element_text(size=0),axis.text.y=element_text(size=15))
+ggplot(cell.prop[1:12,], aes(fill=Cluster, y=value, x='')) + geom_bar(stat="identity", width = 1) + coord_polar("y", start=0) + theme_void() + NoLegend()
+ggplot(cell.prop[13:24,], aes(fill=Cluster, y=value, x='')) + geom_bar(stat="identity", width = 1) + coord_polar("y", start=0) + theme_void() + NoLegend()
+
+
+# Analyze endothelial cells
+endo<-subset(ESC.integrated,idents='Endo')
+
+counts<-GetAssayData(object = endo,slot = "counts")
+nonzero <-counts >0
+keep_genes <- Matrix::rowSums(nonzero)>=10
+filtered_counts <-counts[keep_genes,]
+filtered_seurat <-CreateSeuratObject(filtered_counts,meta.data = endo@meta.data)
+split_seurat<-SplitObject(filtered_seurat,split.by = "orig.ident")
+split_seurat <- lapply(X = split_seurat, FUN = function(x) {
+  x <- NormalizeData(x)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+integ_anchors <- FindIntegrationAnchors(object.list = split_seurat, dims = 1:20)
+seurat_integrated <- IntegrateData(anchorset = integ_anchors, dims = 1:20)
+seurat_integrated <- RunPCA(object = seurat_integrated)
+seurat_integrated <- RunUMAP(seurat_integrated,
+                             dims = 1:30,reduction = "pca")
